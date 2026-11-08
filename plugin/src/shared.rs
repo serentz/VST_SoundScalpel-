@@ -4,6 +4,7 @@
 //! et renonce si l'interface le tient (une image perdue, pas de décrochage).
 
 use soundscalpel_dsp::resonance::ResonanceInfo;
+use soundscalpel_dsp::stem::StemStatus;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
@@ -30,6 +31,8 @@ pub struct Display {
     pub removed: Vec<f32>,
     pub output: Vec<f32>,
     pub resonances: Vec<ResonanceInfo>,
+    /// État de la sidechain (restauration de stem, mode A).
+    pub stem: StemStatus,
     /// Incrémenté à chaque nouvelle image.
     pub version: u64,
 }

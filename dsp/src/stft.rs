@@ -6,6 +6,9 @@
 //! - une trame temporelle déjà fenêtrée par la fenêtre d'analyse (sinusoïdes
 //!   synthétisées par le moteur de résonances).
 //!
+//! Une entrée de référence facultative (le mix d'origine, reçu par la
+//! sidechain) est analysée trame par trame en même temps que l'entrée.
+//!
 //! Fenêtres d'analyse et de synthèse en racine de Hann, pas de N/4 : un parasite
 //! égal à la trame d'entrée redonne l'entrée retardée de exactement `latency()`.
 
@@ -15,21 +18,28 @@ use std::sync::Arc;
 
 /// Décrit la composante parasite d'une trame.
 pub trait Estimator {
-    /// `spectrum` : X(k) de la trame fenêtrée. `parasite` (spectre) et
-    /// `frame` (temporel, fenêtré par l'analyse) arrivent à zéro.
-    fn estimate(&mut self, spectrum: &[Complex32], parasite: &mut [Complex32], frame: &mut [f32]);
+    /// `spectrum` : X(k) de la trame fenêtrée ; `reference` : spectre de la
+    /// référence alignée, si elle est fournie. `parasite` (spectre) et `frame`
+    /// (temporel, fenêtré par l'analyse) arrivent à zéro.
+    fn estimate(
+        &mut self,
+        spectrum: &[Complex32],
+        reference: Option<&[Complex32]>,
+        parasite: &mut [Complex32],
+        frame: &mut [f32],
+    );
 }
 
 /// Rien n'est retiré : p = 0.
 pub struct KeepAll;
 impl Estimator for KeepAll {
-    fn estimate(&mut self, _: &[Complex32], _: &mut [Complex32], _: &mut [f32]) {}
+    fn estimate(&mut self, _: &[Complex32], _: Option<&[Complex32]>, _: &mut [Complex32], _: &mut [f32]) {}
 }
 
 /// Tout est retiré : p = entrée retardée (test d'annulation).
 pub struct RemoveAll;
 impl Estimator for RemoveAll {
-    fn estimate(&mut self, spectrum: &[Complex32], parasite: &mut [Complex32], _: &mut [f32]) {
+    fn estimate(&mut self, spectrum: &[Complex32], _: Option<&[Complex32]>, parasite: &mut [Complex32], _: &mut [f32]) {
         parasite.copy_from_slice(spectrum);
     }
 }
@@ -47,6 +57,10 @@ pub struct Stft {
     window: Vec<f32>,
     inv_overlap: f32,
     in_fifo: Vec<f32>,
+    ref_fifo: Vec<f32>,
+    ref_spectrum: Vec<Complex32>,
+    /// Une référence a été fournie depuis la dernière trame.
+    ref_seen: bool,
     out_fifo: Vec<f32>,
     out_acc: Vec<f32>,
     rover: usize,
@@ -84,6 +98,9 @@ impl Stft {
             window: sqrt_hann(n),
             inv_overlap: 1.0 / overlap_sum,
             in_fifo: vec![0.0; n],
+            ref_fifo: vec![0.0; n],
+            ref_spectrum: vec![Complex32::new(0.0, 0.0); bins],
+            ref_seen: false,
             out_fifo: vec![0.0; hop],
             out_acc: vec![0.0; n],
             rover: n - hop,
@@ -129,6 +146,7 @@ impl Stft {
 
     pub fn reset(&mut self) {
         self.in_fifo.fill(0.0);
+        self.ref_fifo.fill(0.0);
         self.out_fifo.fill(0.0);
         self.out_acc.fill(0.0);
         self.rover = self.n - self.hop;
@@ -137,7 +155,19 @@ impl Stft {
     /// Ajoute un échantillon d'entrée et renvoie l'échantillon de p retardé.
     #[inline]
     pub fn process(&mut self, x: f32, est: &mut impl Estimator) -> f32 {
+        self.process_with_reference(x, None, est)
+    }
+
+    /// Comme [`Stft::process`], avec un échantillon de la référence alignée.
+    #[inline]
+    pub fn process_with_reference(&mut self, x: f32, reference: Option<f32>, est: &mut impl Estimator) -> f32 {
         self.in_fifo[self.rover] = x;
+        if let Some(r) = reference {
+            self.ref_fifo[self.rover] = r;
+            self.ref_seen = true;
+        } else {
+            self.ref_fifo[self.rover] = 0.0;
+        }
         let p = self.out_fifo[self.rover - (self.n - self.hop)];
         self.rover += 1;
         if self.rover == self.n {
@@ -156,9 +186,21 @@ impl Stft {
             .fft
             .process_with_scratch(&mut self.frame, &mut self.spectrum, &mut self.scratch_fwd);
 
+        let has_ref = self.ref_seen;
+        if has_ref {
+            for ((f, x), w) in self.frame.iter_mut().zip(&self.ref_fifo).zip(&self.window) {
+                *f = x * w;
+            }
+            let _ = self
+                .fft
+                .process_with_scratch(&mut self.frame, &mut self.ref_spectrum, &mut self.scratch_fwd);
+        }
+        self.ref_seen = false;
+
         self.parasite.fill(Complex32::new(0.0, 0.0));
         self.frame_td.fill(0.0);
-        est.estimate(&self.spectrum, &mut self.parasite, &mut self.frame_td);
+        let reference = if has_ref { Some(&self.ref_spectrum[..]) } else { None };
+        est.estimate(&self.spectrum, reference, &mut self.parasite, &mut self.frame_td);
         let last = self.parasite.len() - 1;
         self.parasite[0].im = 0.0;
         self.parasite[last].im = 0.0;
@@ -198,5 +240,6 @@ impl Stft {
         let n = self.n;
         self.out_acc[n - hop..].fill(0.0);
         self.in_fifo.copy_within(hop.., 0);
+        self.ref_fifo.copy_within(hop.., 0);
     }
 }

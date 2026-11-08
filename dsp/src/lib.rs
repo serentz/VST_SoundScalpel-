@@ -5,10 +5,12 @@
 //! somme avec la chaîne « Original » donne x − a × p.
 
 pub mod resonance;
+pub mod stem;
 pub mod stft;
 
 use realfft::num_complex::Complex32;
 use resonance::{ResonanceEngine, ResonanceInfo, ResonanceSettings};
+use stem::{StemEngine, StemSettings, StemStatus};
 use stft::{Estimator, RemoveAll, Stft};
 
 /// Ce que le canal envoie en sortie.
@@ -69,16 +71,25 @@ impl Delay {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settings {
     pub resonance: ResonanceSettings,
+    pub stem: StemSettings,
 }
 
 /// Ensemble des moteurs. Le moteur de bruit viendra s'ajouter ici.
 pub struct Engines {
     resonance: ResonanceEngine,
+    stem: StemEngine,
 }
 
 impl Estimator for Engines {
-    fn estimate(&mut self, spectrum: &[Complex32], _parasite: &mut [Complex32], frame: &mut [f32]) {
+    fn estimate(
+        &mut self,
+        spectrum: &[Complex32],
+        reference: Option<&[Complex32]>,
+        parasite: &mut [Complex32],
+        frame: &mut [f32],
+    ) {
         self.resonance.estimate(spectrum, frame);
+        self.stem.estimate(spectrum, reference, parasite);
     }
 }
 
@@ -94,7 +105,8 @@ impl ChannelProcessor {
         let stft = Stft::new(fft_size);
         let delay = Delay::new(stft.latency());
         let resonance = ResonanceEngine::new(fft_size, stft.hop(), sample_rate);
-        Self { stft, delay, engines: Engines { resonance } }
+        let stem = StemEngine::new(fft_size, sample_rate);
+        Self { stft, delay, engines: Engines { resonance, stem } }
     }
 
     pub fn latency(&self) -> usize {
@@ -103,6 +115,7 @@ impl ChannelProcessor {
 
     pub fn set_settings(&mut self, s: &Settings) {
         self.engines.resonance.set_settings(s.resonance);
+        self.engines.stem.set_settings(s.stem);
     }
 
     /// Puissances par case (entrée, retiré, sortie) de la dernière trame.
@@ -124,6 +137,11 @@ impl ChannelProcessor {
         self.engines.resonance.resonances(out)
     }
 
+    /// État de la sidechain pour la restauration de stem.
+    pub fn stem_status(&self) -> StemStatus {
+        self.engines.stem.status()
+    }
+
     /// Nombre de résonances en cours de soustraction.
     pub fn active_resonances(&self) -> usize {
         self.engines.resonance.active_count()
@@ -133,17 +151,26 @@ impl ChannelProcessor {
         self.stft.reset();
         self.delay.reset();
         self.engines.resonance.reset();
+        self.engines.stem.reset();
     }
 
     /// `a` : intensité entre 0 et 1.
     #[inline]
     pub fn process(&mut self, x: f32, a: f32, out: Output) -> f32 {
+        self.process_with_reference(x, None, a, out)
+    }
+
+    /// Comme [`ChannelProcessor::process`], avec un échantillon du mix d'origine
+    /// (sidechain) aligné sur l'entrée.
+    #[inline]
+    pub fn process_with_reference(&mut self, x: f32, reference: Option<f32>, a: f32, out: Output) -> f32 {
         let x = if x.is_finite() { x } else { 0.0 };
+        let reference = reference.map(|r| if r.is_finite() { r } else { 0.0 });
         let xd = self.delay.process(x);
         let p = if matches!(out, Output::CancelTest | Output::CancelTestDirect) {
             self.stft.process(x, &mut RemoveAll)
         } else {
-            self.stft.process(x, &mut self.engines)
+            self.stft.process_with_reference(x, reference, &mut self.engines)
         };
         let y = match out {
             Output::InvertedParasite => -a * p,

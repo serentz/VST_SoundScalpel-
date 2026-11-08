@@ -2,7 +2,7 @@
 //! toujours visibles, réglages avancés, liste des résonances soustraites.
 
 use crate::shared::Shared;
-use crate::{OutputMode, ScalpelParams};
+use crate::{OutputMode, ScalpelParams, StemChoice};
 use nih_plug::prelude::*;
 use nih_plug_egui::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use nih_plug_egui::{create_egui_editor, widgets, EguiState};
@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 pub const WIDTH: u32 = 1000;
-pub const HEIGHT: u32 = 600;
+pub const HEIGHT: u32 = 680;
 
 const BG: Color32 = Color32::from_rgb(0x14, 0x12, 0x1B);
 const PANEL: Color32 = Color32::from_rgb(0x1E, 0x1B, 0x28);
@@ -22,6 +22,8 @@ const OUTPUT: Color32 = Color32::from_rgb(0xD8, 0xD2, 0xF0);
 const ACCENT: Color32 = Color32::from_rgb(0xFF, 0x6A, 0x2C);
 const LISTEN: Color32 = Color32::from_rgb(0xD9, 0x2B, 0x3A);
 const TEST: Color32 = Color32::from_rgb(0x2B, 0x8C, 0xD9);
+const OK: Color32 = Color32::from_rgb(0x4C, 0xC2, 0x7A);
+const WARN: Color32 = Color32::from_rgb(0xF2, 0xB1, 0x3A);
 
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 20_000.0;
@@ -204,31 +206,89 @@ fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, sha
         shared.cancel_test.store(!testing, Ordering::Relaxed);
     }
 
-    ui.add_space(6.0);
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Résonances et sifflements").strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let on = params.res_enabled.value();
-            if ui.selectable_label(on, if on { "Actif" } else { "Inactif" }).clicked() {
-                set_param(setter, &params.res_enabled, !on);
-            }
-        });
-    });
-    egui::CollapsingHeader::new("Réglages avancés").default_open(true).show(ui, |ui| {
-        slider(ui, "Sensibilité (écart au voisinage)", &params.res_sensitivity, setter);
-        slider(ui, "Persistance avant retrait", &params.res_persistence, setter);
-        slider(ui, "Variation de niveau tolérée", &params.res_max_slope, setter);
-        slider(ui, "Fréquence basse", &params.res_min_hz, setter);
-        slider(ui, "Fréquence haute", &params.res_max_hz, setter);
-    });
+    let latency = shared.latency.load(Ordering::Relaxed);
+    let sr = shared.display.lock().map(|d| d.sample_rate).unwrap_or(0.0);
+    let ms = if sr > 0.0 { latency as f32 * 1000.0 / sr } else { 0.0 };
+    ui.label(RichText::new(format!("Latence déclarée : {latency} éch. ({} ms)", fr(ms, 1))).color(LABEL));
 
-    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        let latency = shared.latency.load(Ordering::Relaxed);
-        let sr = shared.display.lock().map(|d| d.sample_rate).unwrap_or(0.0);
-        let ms = if sr > 0.0 { latency as f32 * 1000.0 / sr } else { 0.0 };
-        ui.label(RichText::new(format!("Latence déclarée : {latency} éch. ({} ms)", fr(ms, 1))).color(LABEL));
+    ui.add_space(4.0);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Résonances et sifflements").strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let on = params.res_enabled.value();
+                if ui.selectable_label(on, if on { "Actif" } else { "Inactif" }).clicked() {
+                    set_param(setter, &params.res_enabled, !on);
+                }
+            });
+        });
+        egui::CollapsingHeader::new("Réglages des résonances").default_open(true).show(ui, |ui| {
+            slider(ui, "Sensibilité (écart au voisinage)", &params.res_sensitivity, setter);
+            slider(ui, "Persistance avant retrait", &params.res_persistence, setter);
+            slider(ui, "Variation de niveau tolérée", &params.res_max_slope, setter);
+            slider(ui, "Fréquence basse", &params.res_min_hz, setter);
+            slider(ui, "Fréquence haute", &params.res_max_hz, setter);
+        });
+        ui.add_space(6.0);
+        ui.separator();
+        stem_section(ui, params, setter, shared);
     });
+}
+
+fn stem_section(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, shared: &Shared) {
+    ui.label(RichText::new("Restauration de stem (aigus perdus)").strong());
+    let current = params.stem_mode.value();
+    ui.horizontal_wrapped(|ui| {
+        for (mode, name, hint) in [
+            (StemChoice::Off, "Désactivée", "Aucune restauration"),
+            (
+                StemChoice::WithMix,
+                "A : avec le mix",
+                "Le mix d'origine arrive sur la sidechain du plugin : les aigus perdus sont repris dans le mix, avec leur vraie phase",
+            ),
+            (
+                StemChoice::Blind,
+                "B : sans référence",
+                "Sans le mix d'origine : remontée dynamique des aigus qui s'effondrent, aigus recréés en option",
+            ),
+        ] {
+            if ui.selectable_label(current == mode, name).on_hover_text(hint).clicked() {
+                set_param(setter, &params.stem_mode, mode);
+            }
+        }
+    });
+    ui.add_space(2.0);
+    match current {
+        StemChoice::Off => {}
+        StemChoice::WithMix => {
+            let status = shared.display.lock().map(|d| d.stem).unwrap_or_default();
+            let (text, color) = if !status.has_reference {
+                (
+                    "Aucun signal sur la sidechain : dans Live, choisis la piste du mix d'origine dans « Sidechain » du plugin."
+                        .to_string(),
+                    WARN,
+                )
+            } else if !status.lag_reliable {
+                ("Mix reçu, mesure de l'alignement en cours…".to_string(), LABEL)
+            } else if status.lag == 0 {
+                ("Mix reçu, aligné sur le stem.".to_string(), OK)
+            } else {
+                let side = if status.lag > 0 { "en retard" } else { "en avance" };
+                (format!("Stem {side} de {} éch. sur le mix : aligne les deux pistes.", status.lag.abs()), LISTEN)
+            };
+            ui.label(RichText::new(text).color(color));
+            slider(ui, "Début de restauration", &params.stem_start, setter);
+            slider(ui, "Récupération", &params.stem_recovery, setter);
+        }
+        StemChoice::Blind => {
+            slider(ui, "Début de restauration", &params.stem_start, setter);
+            slider(ui, "Pente cible", &params.stem_slope, setter);
+            slider(ui, "Remontée maximale", &params.stem_boost, setter);
+            slider(ui, "Aigus recréés", &params.stem_synth, setter);
+            ui.label(RichText::new("Les aigus recréés sont inventés : à doser à l'oreille.").color(LABEL));
+        }
+    }
 }
 
 fn resonance_list(ui: &mut egui::Ui, view: &View) {
@@ -368,8 +428,8 @@ fn analyzer(ui: &mut egui::Ui, view: &View, params: &ScalpelParams, shared: &Sha
     }
 
     // Légende et témoins.
-    let legend = [("Entrée", INPUT), ("Retiré", ACCENT), ("Sortie", OUTPUT)];
-    let mut x = plot.right() - 200.0;
+    let legend = [("Entrée", INPUT), ("Retiré / ajouté", ACCENT), ("Sortie", OUTPUT)];
+    let mut x = plot.right() - 250.0;
     for (name, color) in legend {
         painter.rect_filled(Rect::from_min_size(Pos2::new(x, plot.top() + 8.0), Vec2::new(10.0, 10.0)), 2.0, color);
         painter.text(Pos2::new(x + 14.0, plot.top() + 13.0), Align2::LEFT_CENTER, name, small.clone(), OUTPUT);

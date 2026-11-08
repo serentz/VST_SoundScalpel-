@@ -2,8 +2,9 @@
 //!
 //! Usage prévu : Audio Effect Rack à deux chaînes, « Original » vide et
 //! « SoundScalpel » en mode « Parasite inversé ». La somme du rack donne le son
-//! nettoyé. Moteurs : résonances et sifflements (synthèse et soustraction).
-//! Le moteur de bruit viendra ensuite.
+//! nettoyé. Moteurs : résonances et sifflements (synthèse et soustraction),
+//! restauration de stem (mode A avec le mix d'origine sur la sidechain, mode B
+//! sans référence). Le moteur de bruit viendra ensuite.
 
 mod editor;
 mod shared;
@@ -12,6 +13,7 @@ use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 use shared::{Shared, MAX_SHOWN};
 use soundscalpel_dsp::resonance::{ResonanceInfo, ResonanceSettings};
+use soundscalpel_dsp::stem::{StemMode, StemSettings};
 use soundscalpel_dsp::{fft_size_for, ChannelProcessor, Output, Settings};
 use std::num::NonZeroU32;
 use std::sync::atomic::Ordering;
@@ -23,6 +25,16 @@ pub enum OutputMode {
     InvertedParasite,
     #[name = "Signal nettoyé"]
     Cleaned,
+}
+
+#[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
+pub enum StemChoice {
+    #[name = "Désactivée"]
+    Off,
+    #[name = "A : avec le mix d'origine"]
+    WithMix,
+    #[name = "B : sans référence"]
+    Blind,
 }
 
 #[derive(Params)]
@@ -49,6 +61,26 @@ pub struct ScalpelParams {
     pub res_min_hz: FloatParam,
     #[id = "res_hi"]
     pub res_max_hz: FloatParam,
+
+    #[id = "stem_mode"]
+    pub stem_mode: EnumParam<StemChoice>,
+    #[id = "stem_start"]
+    pub stem_start: FloatParam,
+    #[id = "stem_recovery"]
+    pub stem_recovery: FloatParam,
+    #[id = "stem_slope"]
+    pub stem_slope: FloatParam,
+    #[id = "stem_boost"]
+    pub stem_boost: FloatParam,
+    #[id = "stem_synth"]
+    pub stem_synth: FloatParam,
+}
+
+fn percent_param(name: &str, default: f32) -> FloatParam {
+    FloatParam::new(name, default, FloatRange::Linear { min: 0.0, max: 1.0 })
+        .with_unit(" %")
+        .with_value_to_string(formatters::v2s_f32_percentage(0))
+        .with_string_to_value(formatters::s2v_f32_percentage())
 }
 
 fn hz_param(name: &str, default: f32, min: f32, max: f32) -> FloatParam {
@@ -93,9 +125,28 @@ impl Default for ScalpelParams {
             .with_value_to_string(formatters::v2s_f32_rounded(1)),
             res_min_hz: hz_param("Fréquence basse", 40.0, 20.0, 2000.0),
             res_max_hz: hz_param("Fréquence haute", 18_000.0, 1000.0, 20_000.0),
+
+            stem_mode: EnumParam::new("Restauration de stem", StemChoice::Off),
+            stem_start: hz_param("Début de restauration", 2500.0, 500.0, 10_000.0),
+            stem_recovery: percent_param("Récupération", 1.0),
+            stem_slope: FloatParam::new("Pente cible", -4.5, FloatRange::Linear { min: -12.0, max: 0.0 })
+                .with_unit(" dB/oct")
+                .with_value_to_string(formatters::v2s_f32_rounded(1)),
+            stem_boost: FloatParam::new("Remontée maximale", 12.0, FloatRange::Linear { min: 0.0, max: 24.0 })
+                .with_unit(" dB")
+                .with_value_to_string(formatters::v2s_f32_rounded(1)),
+            stem_synth: percent_param("Aigus recréés", 0.0),
         }
     }
 }
+
+const PORT_NAMES: PortNames = PortNames {
+    layout: None,
+    main_input: None,
+    main_output: None,
+    aux_inputs: &["Mix d'origine"],
+    aux_outputs: &[],
+};
 
 struct SoundScalpel {
     params: Arc<ScalpelParams>,
@@ -122,6 +173,7 @@ impl SoundScalpel {
     fn publish_display(&mut self) {
         let Some(first) = self.channels.first() else { return };
         let frames = first.frames();
+        let first_status = first.stem_status();
         if frames == self.last_frames {
             return;
         }
@@ -152,6 +204,7 @@ impl SoundScalpel {
                 }
             }
         }
+        d.stem = first_status;
         d.version = d.version.wrapping_add(1);
     }
 }
@@ -167,11 +220,15 @@ impl Plugin for SoundScalpel {
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(2),
             main_output_channels: NonZeroU32::new(2),
+            aux_input_ports: &[new_nonzero_u32(2)],
+            names: PORT_NAMES,
             ..AudioIOLayout::const_default()
         },
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(1),
             main_output_channels: NonZeroU32::new(1),
+            aux_input_ports: &[new_nonzero_u32(1)],
+            names: PORT_NAMES,
             ..AudioIOLayout::const_default()
         },
     ];
@@ -218,7 +275,7 @@ impl Plugin for SoundScalpel {
     fn process(
         &mut self,
         buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
+        aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let p = &self.params;
@@ -243,15 +300,34 @@ impl Plugin for SoundScalpel {
                 min_hz: p.res_min_hz.value(),
                 max_hz: p.res_max_hz.value(),
             },
+            stem: StemSettings {
+                mode: match p.stem_mode.value() {
+                    StemChoice::Off => StemMode::Off,
+                    StemChoice::WithMix => StemMode::WithMix,
+                    StemChoice::Blind => StemMode::Blind,
+                },
+                start_hz: p.stem_start.value(),
+                recovery: p.stem_recovery.value(),
+                target_slope_db_oct: p.stem_slope.value(),
+                max_boost_db: p.stem_boost.value(),
+                synth: p.stem_synth.value(),
+            },
+        };
+        // Le mix d'origine n'est analysé qu'en mode A.
+        let reference = if settings.stem.mode == StemMode::WithMix {
+            aux.inputs.first().map(|b| b.as_slice_immutable()).filter(|c| !c.is_empty())
+        } else {
+            None
         };
         for ch in &mut self.channels {
             ch.set_settings(&settings);
         }
 
-        for mut frame in buffer.iter_samples() {
+        for (t, mut frame) in buffer.iter_samples().enumerate() {
             let a = p.intensity.smoothed.next();
-            for (ch, sample) in self.channels.iter_mut().zip(frame.iter_mut()) {
-                *sample = ch.process(*sample, a, out);
+            for (c, (ch, sample)) in self.channels.iter_mut().zip(frame.iter_mut()).enumerate() {
+                let r = reference.and_then(|aux| aux[c.min(aux.len() - 1)].get(t).copied());
+                *sample = ch.process_with_reference(*sample, r, a, out);
             }
         }
 

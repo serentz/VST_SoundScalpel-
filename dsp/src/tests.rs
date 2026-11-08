@@ -269,3 +269,149 @@ fn spectres_d_affichage_coherents() {
     assert!((info[0].hz - 6000.0).abs() < 1.0, "{} Hz", info[0].hz);
     assert!((info[0].level_db - db(0.0316) as f32).abs() < 0.5, "{} dB", info[0].level_db);
 }
+
+// ---------- Moteur 3 : restauration de stem ----------
+
+use stem::{StemMode, StemSettings};
+
+/// Filtre à phase nulle sur tout le signal : gain(f) appliqué par FFT.
+fn fft_filter(x: &[f32], gain: impl Fn(f32) -> f32) -> Vec<f32> {
+    let n = x.len().next_power_of_two();
+    let mut planner = realfft::RealFftPlanner::<f32>::new();
+    let fwd = planner.plan_fft_forward(n);
+    let inv = planner.plan_fft_inverse(n);
+    let mut buf = x.to_vec();
+    buf.resize(n, 0.0);
+    let mut spec = fwd.make_output_vec();
+    fwd.process(&mut buf, &mut spec).unwrap();
+    for (k, s) in spec.iter_mut().enumerate() {
+        *s *= gain(k as f32 * SR / n as f32) / n as f32;
+    }
+    let last = spec.len() - 1;
+    spec[0].im = 0.0;
+    spec[last].im = 0.0;
+    inv.process(&mut spec, &mut buf).unwrap();
+    buf.truncate(x.len());
+    buf
+}
+
+/// Stem de synthèse riche en aigus : dent de scie à 220 Hz + souffle léger.
+fn bright_stem(len: usize) -> Vec<f32> {
+    let mut rng = Rng(0xBEEF);
+    (0..len)
+        .map(|i| {
+            let t = i as f32 / SR;
+            let mut v = 0.0;
+            let mut h = 1;
+            while 220.0 * (h as f32) < 20_000.0 {
+                v += (2.0 * std::f32::consts::PI * 220.0 * h as f32 * t + 0.1 * h as f32).sin() / h as f32;
+                h += 1;
+            }
+            0.08 * v + 0.002 * rng.next()
+        })
+        .collect()
+}
+
+/// Autre source du mix, surtout grave.
+fn dark_other(len: usize) -> Vec<f32> {
+    let mut rng = Rng(0xCAFE);
+    let noise: Vec<f32> = (0..len).map(|_| 0.3 * rng.next()).collect();
+    let low = fft_filter(&noise, |f| if f < 1200.0 { 1.0 } else { 0.0 });
+    let mut rng2 = Rng(0xF00D);
+    low.iter().map(|v| v + 0.001 * rng2.next()).collect()
+}
+
+fn band_error_db(a: &[f32], b: &[f32]) -> f64 {
+    let diff: Vec<f32> = a.iter().zip(b).map(|(x, y)| x - y).collect();
+    let band = fft_filter(&diff, |f| if (4000.0..12_000.0).contains(&f) { 1.0 } else { 0.0 });
+    db(rms(band.iter().copied()))
+}
+
+fn stem_settings(mode: StemMode) -> Settings {
+    let mut s = Settings::default();
+    s.resonance.enabled = false;
+    s.stem = StemSettings { mode, start_hz: 3000.0, target_slope_db_oct: -6.0, ..StemSettings::default() };
+    s
+}
+
+/// Traite `stem` (avec `mix` en référence si fourni) ; renvoie la sortie réalignée.
+fn restore(stem: &[f32], mix: Option<&[f32]>, s: &Settings) -> (Vec<f32>, ChannelProcessor) {
+    let mut ch = ChannelProcessor::new(2048, SR);
+    ch.set_settings(s);
+    let lat = ch.latency();
+    let mut out: Vec<f32> = (0..stem.len())
+        .map(|t| ch.process_with_reference(stem[t], mix.map(|m| m[t]), 1.0, Output::Cleaned))
+        .collect();
+    out.drain(..lat);
+    (out, ch)
+}
+
+/// Recette « Stem avec mix (A) ».
+#[test]
+fn stem_avec_mix_retrouve_ses_aigus() {
+    let len = 3 * SR as usize;
+    let truth = bright_stem(len);
+    let mix: Vec<f32> = truth.iter().zip(dark_other(len)).map(|(a, b)| a + b).collect();
+    let separated = fft_filter(&truth, |f| if f < 3000.0 { 1.0 } else { 0.0 });
+    let (out, ch) = restore(&separated, Some(&mix), &stem_settings(StemMode::WithMix));
+    let from = SR as usize;
+    let end = out.len();
+    let before = band_error_db(&separated[from..end], &truth[from..end]);
+    let after = band_error_db(&out[from..end], &truth[from..end]);
+    println!("mode A : écart 4–12 kHz {before:.1} dB → {after:.1} dB");
+    assert!(before - after >= 6.0, "gain {:.1} dB", before - after);
+    let status = ch.stem_status();
+    assert!(status.has_reference);
+    assert!(status.lag_reliable && status.lag == 0, "décalage {} ({})", status.lag, status.lag_reliable);
+}
+
+/// Recette « Stem sans référence (B) ».
+#[test]
+fn stem_sans_reference_remonte_ses_aigus() {
+    let len = 3 * SR as usize;
+    let truth = bright_stem(len);
+    let dull = fft_filter(&truth, |f| if f < 3000.0 { 1.0 } else { 0.25 }); // −12 dB
+    let (out, _) = restore(&dull, None, &stem_settings(StemMode::Blind));
+    let from = SR as usize;
+    let end = out.len();
+    let before = band_error_db(&dull[from..end], &truth[from..end]);
+    let after = band_error_db(&out[from..end], &truth[from..end]);
+    println!("mode B : écart 4–12 kHz {before:.1} dB → {after:.1} dB");
+    assert!(before - after >= 6.0, "gain {:.1} dB", before - after);
+}
+
+/// Mode B sur un stem déjà brillant : presque rien n'est ajouté.
+#[test]
+fn stem_sans_reference_laisse_un_stem_brillant() {
+    let len = 3 * SR as usize;
+    let truth = bright_stem(len);
+    let (out, _) = restore(&truth, None, &stem_settings(StemMode::Blind));
+    let from = SR as usize;
+    let end = out.len();
+    let added = db(rms((from..end).map(|t| out[t] - truth[t]))) - db(rms(truth[from..end].iter().copied()));
+    println!("mode B sur stem brillant : ajout {added:.1} dB");
+    assert!(added < -20.0, "ajout {added:.1} dB");
+}
+
+/// Désactivé : sortie = entrée retardée, même avec une référence.
+#[test]
+fn stem_desactive_ne_change_rien() {
+    let len = SR as usize;
+    let truth = bright_stem(len);
+    let mix: Vec<f32> = truth.iter().zip(dark_other(len)).map(|(a, b)| a + b).collect();
+    let (out, _) = restore(&truth, Some(&mix), &stem_settings(StemMode::Off));
+    assert!(out.iter().zip(&truth).all(|(a, b)| a == b));
+}
+
+/// Le décalage entre stem et mix est mesuré.
+#[test]
+fn decalage_stem_mix_mesure() {
+    let len = 2 * SR as usize;
+    let truth = bright_stem(len);
+    let mix: Vec<f32> = truth.iter().zip(dark_other(len)).map(|(a, b)| a + b).collect();
+    let delayed_stem: Vec<f32> = (0..len).map(|t| if t >= 37 { truth[t - 37] } else { 0.0 }).collect();
+    let (_, ch) = restore(&delayed_stem, Some(&mix), &stem_settings(StemMode::WithMix));
+    let status = ch.stem_status();
+    assert!(status.lag_reliable, "mesure non fiable");
+    assert_eq!(status.lag, 37);
+}
