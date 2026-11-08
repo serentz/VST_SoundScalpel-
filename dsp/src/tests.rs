@@ -1,4 +1,5 @@
 use super::*;
+use resonance::ResonanceInfo;
 use stft::KeepAll;
 
 const SR: f32 = 48_000.0;
@@ -123,6 +124,7 @@ fn coherence_rack_et_signal_nettoye() {
     let mut a = ChannelProcessor::new(2048, SR);
     let mut b = ChannelProcessor::new(2048, SR);
     let mut c = ChannelProcessor::new(2048, SR);
+    let mut d = ChannelProcessor::new(2048, SR);
     let lat = a.latency();
     for (t, &v) in x.iter().enumerate() {
         let original = if t >= lat { x[t - lat] } else { 0.0 };
@@ -131,6 +133,8 @@ fn coherence_rack_et_signal_nettoye() {
         let listened = c.process(v, 0.7, Output::Listen);
         assert!((rack - cleaned).abs() < 1e-5, "t = {t}");
         assert!((cleaned + listened - original).abs() < 1e-5, "t = {t}");
+        let rack_listen = original + d.process(v, 0.7, Output::ListenRack);
+        assert!((rack_listen - listened).abs() < 1e-5, "t = {t}");
     }
 }
 
@@ -236,4 +240,32 @@ fn sinus_pur_annule_d_au_moins_40_db() {
         println!("sinus pur {hz} Hz : {r:.1} dB");
         assert!(r >= 40.0, "{hz} Hz : {r:.1} dB");
     }
+}
+
+#[test]
+fn test_d_annulation_direct_donne_un_silence() {
+    let x = noise_and_tone(48_000);
+    let mut ch = ChannelProcessor::new(2048, SR);
+    let y: Vec<f32> = x.iter().map(|&v| ch.process(v, 1.0, Output::CancelTestDirect)).collect();
+    assert!(db(rms(y[4096..].iter().copied())) < -100.0);
+}
+
+/// L'affichage voit le sifflement dans « retiré » et plus dans la sortie.
+#[test]
+fn spectres_d_affichage_coherents() {
+    let len = 3 * SR as usize;
+    let x = sine(len, 6000.0, 0.0316);
+    let mut ch = ChannelProcessor::new(2048, SR);
+    for &v in &x {
+        ch.process(v, 1.0, Output::Cleaned);
+    }
+    let k = (6000.0 / (SR / 2048.0)).round() as usize;
+    let (inp, rem, out) = ch.spectra();
+    assert!(rem[k] > 0.9 * inp[k], "retiré {} / entrée {}", rem[k], inp[k]);
+    assert!(out[k] < 1e-4 * inp[k], "sortie {} / entrée {}", out[k], inp[k]);
+    let mut info = [ResonanceInfo::default(); 4];
+    let n = ch.resonances(&mut info);
+    assert_eq!(n, 1);
+    assert!((info[0].hz - 6000.0).abs() < 1.0, "{} Hz", info[0].hz);
+    assert!((info[0].level_db - db(0.0316) as f32).abs() < 0.5, "{} dB", info[0].level_db);
 }

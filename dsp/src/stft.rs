@@ -54,6 +54,13 @@ pub struct Stft {
     frame_td: Vec<f32>,
     spectrum: Vec<Complex32>,
     parasite: Vec<Complex32>,
+    removed: Vec<Complex32>,
+    td_spectrum: Vec<Complex32>,
+    /// Puissances par case de la dernière trame : entrée, retiré, sortie nettoyée.
+    in_pow: Vec<f32>,
+    removed_pow: Vec<f32>,
+    out_pow: Vec<f32>,
+    frames: u64,
     fft: Arc<dyn RealToComplex<f32>>,
     ifft: Arc<dyn ComplexToReal<f32>>,
     scratch_fwd: Vec<Complex32>,
@@ -84,6 +91,12 @@ impl Stft {
             frame_td: vec![0.0; n],
             spectrum: vec![Complex32::new(0.0, 0.0); bins],
             parasite: vec![Complex32::new(0.0, 0.0); bins],
+            removed: vec![Complex32::new(0.0, 0.0); bins],
+            td_spectrum: vec![Complex32::new(0.0, 0.0); bins],
+            in_pow: vec![0.0; bins],
+            removed_pow: vec![0.0; bins],
+            out_pow: vec![0.0; bins],
+            frames: 0,
             scratch_fwd: fft.make_scratch_vec(),
             scratch_inv: ifft.make_scratch_vec(),
             fft,
@@ -102,6 +115,16 @@ impl Stft {
 
     pub fn hop(&self) -> usize {
         self.hop
+    }
+
+    /// Puissances par case (entrée, retiré, sortie) de la dernière trame.
+    pub fn spectra(&self) -> (&[f32], &[f32], &[f32]) {
+        (&self.in_pow, &self.removed_pow, &self.out_pow)
+    }
+
+    /// Nombre de trames traitées depuis la création.
+    pub fn frames(&self) -> u64 {
+        self.frames
     }
 
     pub fn reset(&mut self) {
@@ -139,6 +162,21 @@ impl Stft {
         let last = self.parasite.len() - 1;
         self.parasite[0].im = 0.0;
         self.parasite[last].im = 0.0;
+
+        // Spectre complet de ce qui est retiré, pour l'affichage.
+        self.removed.copy_from_slice(&self.parasite);
+        self.frame.copy_from_slice(&self.frame_td);
+        let _ = self
+            .fft
+            .process_with_scratch(&mut self.frame, &mut self.td_spectrum, &mut self.scratch_fwd);
+        for k in 0..self.removed.len() {
+            let r = self.removed[k] + self.td_spectrum[k];
+            let x = self.spectrum[k];
+            self.in_pow[k] = x.norm_sqr();
+            self.removed_pow[k] = r.norm_sqr();
+            self.out_pow[k] = (x - r).norm_sqr();
+        }
+        self.frames += 1;
 
         let _ = self
             .ifft

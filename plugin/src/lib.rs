@@ -5,14 +5,20 @@
 //! nettoyé. Moteurs : résonances et sifflements (synthèse et soustraction).
 //! Le moteur de bruit viendra ensuite.
 
+mod editor;
+mod shared;
+
 use nih_plug::prelude::*;
-use soundscalpel_dsp::resonance::ResonanceSettings;
+use nih_plug_egui::EguiState;
+use shared::{Shared, MAX_SHOWN};
+use soundscalpel_dsp::resonance::{ResonanceInfo, ResonanceSettings};
 use soundscalpel_dsp::{fft_size_for, ChannelProcessor, Output, Settings};
 use std::num::NonZeroU32;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 #[derive(Enum, PartialEq, Eq, Clone, Copy, Debug)]
-enum OutputMode {
+pub enum OutputMode {
     #[name = "Parasite inversé"]
     InvertedParasite,
     #[name = "Signal nettoyé"]
@@ -20,30 +26,29 @@ enum OutputMode {
 }
 
 #[derive(Params)]
-struct ScalpelParams {
+pub struct ScalpelParams {
+    #[persist = "editor-state"]
+    editor_state: Arc<EguiState>,
+
     #[id = "intensity"]
-    intensity: FloatParam,
+    pub intensity: FloatParam,
     #[id = "output"]
-    output: EnumParam<OutputMode>,
-    #[id = "listen"]
-    listen: BoolParam,
-    #[id = "cancel_test"]
-    cancel_test: BoolParam,
+    pub output: EnumParam<OutputMode>,
     #[id = "bypass"]
-    bypass: BoolParam,
+    pub bypass: BoolParam,
 
     #[id = "res_on"]
-    res_enabled: BoolParam,
+    pub res_enabled: BoolParam,
     #[id = "res_sens"]
-    res_sensitivity: FloatParam,
+    pub res_sensitivity: FloatParam,
     #[id = "res_persist"]
-    res_persistence: FloatParam,
+    pub res_persistence: FloatParam,
     #[id = "res_slope"]
-    res_max_slope: FloatParam,
+    pub res_max_slope: FloatParam,
     #[id = "res_lo"]
-    res_min_hz: FloatParam,
+    pub res_min_hz: FloatParam,
     #[id = "res_hi"]
-    res_max_hz: FloatParam,
+    pub res_max_hz: FloatParam,
 }
 
 fn hz_param(name: &str, default: f32, min: f32, max: f32) -> FloatParam {
@@ -55,14 +60,13 @@ fn hz_param(name: &str, default: f32, min: f32, max: f32) -> FloatParam {
 impl Default for ScalpelParams {
     fn default() -> Self {
         Self {
+            editor_state: editor::default_state(),
             intensity: FloatParam::new("Intensité", 1.0, FloatRange::Linear { min: 0.0, max: 1.0 })
                 .with_smoother(SmoothingStyle::Linear(20.0))
                 .with_unit(" %")
                 .with_value_to_string(formatters::v2s_f32_percentage(0))
                 .with_string_to_value(formatters::s2v_f32_percentage()),
             output: EnumParam::new("Mode de sortie", OutputMode::InvertedParasite),
-            listen: BoolParam::new("Écouter ce qui est retiré", false).non_automatable(),
-            cancel_test: BoolParam::new("Test d'annulation", false).non_automatable(),
             bypass: BoolParam::new("Contournement", false).make_bypass(),
 
             res_enabled: BoolParam::new("Résonances", true),
@@ -95,12 +99,60 @@ impl Default for ScalpelParams {
 
 struct SoundScalpel {
     params: Arc<ScalpelParams>,
+    shared: Arc<Shared>,
     channels: Vec<ChannelProcessor>,
+    last_frames: u64,
+    infos: [ResonanceInfo; MAX_SHOWN],
 }
 
 impl Default for SoundScalpel {
     fn default() -> Self {
-        Self { params: Arc::new(ScalpelParams::default()), channels: Vec::new() }
+        Self {
+            params: Arc::new(ScalpelParams::default()),
+            shared: Arc::new(Shared::default()),
+            channels: Vec::new(),
+            last_frames: 0,
+            infos: [ResonanceInfo::default(); MAX_SHOWN],
+        }
+    }
+}
+
+impl SoundScalpel {
+    /// Copie la dernière trame analysée vers l'interface, sans jamais attendre.
+    fn publish_display(&mut self) {
+        let Some(first) = self.channels.first() else { return };
+        let frames = first.frames();
+        if frames == self.last_frames {
+            return;
+        }
+        let Ok(mut d) = self.shared.display.try_lock() else { return };
+        self.last_frames = frames;
+        let scale = 1.0 / self.channels.len() as f32;
+        d.input.fill(0.0);
+        d.removed.fill(0.0);
+        d.output.fill(0.0);
+        d.resonances.clear();
+        let bin_hz = d.sample_rate / d.fft_size.max(1) as f32;
+        for ch in &self.channels {
+            let (i, r, o) = ch.spectra();
+            let n = d.input.len().min(i.len());
+            for k in 0..n {
+                d.input[k] += i[k] * scale;
+                d.removed[k] += r[k] * scale;
+                d.output[k] += o[k] * scale;
+            }
+            let count = ch.resonances(&mut self.infos);
+            for info in &self.infos[..count] {
+                // En stéréo, la même résonance apparaît sur les deux canaux.
+                if let Some(same) = d.resonances.iter_mut().find(|r| (r.hz - info.hz).abs() < bin_hz) {
+                    same.weight = same.weight.max(info.weight);
+                    same.level_db = same.level_db.max(info.level_db);
+                } else if d.resonances.len() < MAX_SHOWN {
+                    d.resonances.push(*info);
+                }
+            }
+        }
+        d.version = d.version.wrapping_add(1);
     }
 }
 
@@ -133,6 +185,10 @@ impl Plugin for SoundScalpel {
         self.params.clone()
     }
 
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        editor::create(self.params.clone(), self.shared.clone())
+    }
+
     fn initialize(
         &mut self,
         layout: &AudioIOLayout,
@@ -140,11 +196,16 @@ impl Plugin for SoundScalpel {
         context: &mut impl InitContext<Self>,
     ) -> bool {
         let channels = layout.main_output_channels.map(NonZeroU32::get).unwrap_or(0) as usize;
-        let n = fft_size_for(buffer_config.sample_rate);
         let sr = buffer_config.sample_rate;
+        let n = fft_size_for(sr);
         self.channels = (0..channels).map(|_| ChannelProcessor::new(n, sr)).collect();
-        let latency = self.channels.first().map(ChannelProcessor::latency).unwrap_or(0);
-        context.set_latency_samples(latency as u32);
+        self.last_frames = 0;
+        let latency = self.channels.first().map(ChannelProcessor::latency).unwrap_or(0) as u32;
+        context.set_latency_samples(latency);
+        self.shared.latency.store(latency, Ordering::Relaxed);
+        if let Ok(mut d) = self.shared.display.lock() {
+            d.prepare(sr, n);
+        }
         true
     }
 
@@ -162,16 +223,15 @@ impl Plugin for SoundScalpel {
     ) -> ProcessStatus {
         let p = &self.params;
         let rack = p.output.value() == OutputMode::InvertedParasite;
-        let out = if p.bypass.value() {
-            if rack { Output::BypassSilent } else { Output::BypassDry }
-        } else if p.cancel_test.value() {
-            Output::CancelTest
-        } else if p.listen.value() {
-            Output::Listen
-        } else if rack {
-            Output::InvertedParasite
-        } else {
-            Output::Cleaned
+        let out = match (p.bypass.value(), self.shared.is_cancel_test(), self.shared.is_listening(), rack) {
+            (true, _, _, true) => Output::BypassSilent,
+            (true, _, _, false) => Output::BypassDry,
+            (_, true, _, true) => Output::CancelTest,
+            (_, true, _, false) => Output::CancelTestDirect,
+            (_, _, true, true) => Output::ListenRack,
+            (_, _, true, false) => Output::Listen,
+            (_, _, _, true) => Output::InvertedParasite,
+            (_, _, _, false) => Output::Cleaned,
         };
 
         let settings = Settings {
@@ -194,6 +254,8 @@ impl Plugin for SoundScalpel {
                 *sample = ch.process(*sample, a, out);
             }
         }
+
+        self.publish_display();
         ProcessStatus::Normal
     }
 }

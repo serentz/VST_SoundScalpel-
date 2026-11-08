@@ -70,6 +70,16 @@ impl Default for ResonanceSettings {
     }
 }
 
+/// Résonance en cours de soustraction, pour l'affichage.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ResonanceInfo {
+    pub hz: f32,
+    /// Amplitude de la sinusoïde, en dBFS.
+    pub level_db: f32,
+    /// Part soustraite, de 0 à 1 (fondus d'entrée et de sortie).
+    pub weight: f32,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Track {
     alive: bool,
@@ -159,6 +169,20 @@ impl ResonanceEngine {
     pub fn reset(&mut self) {
         self.tracks = [Track::default(); MAX_TRACKS];
         self.has_prev = false;
+    }
+
+    /// Remplit `out` avec les résonances soustraites ; renvoie leur nombre.
+    pub fn resonances(&self, out: &mut [ResonanceInfo]) -> usize {
+        let bin_hz = self.sample_rate / self.n as f32;
+        let mut count = 0;
+        for t in self.tracks.iter().filter(|t| t.alive && t.weight > 0.0) {
+            if count == out.len() {
+                break;
+            }
+            out[count] = ResonanceInfo { hz: t.f * bin_hz, level_db: t.amp_db, weight: t.weight };
+            count += 1;
+        }
+        count
     }
 
     /// Nombre de parasites en cours de soustraction (pour l'affichage et les tests).
