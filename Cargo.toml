@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["dsp", "plugin", "xtask"]
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
