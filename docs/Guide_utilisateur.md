@@ -122,7 +122,7 @@ De haut en bas :
 
 En bas de la fenêtre, la liste des **résonances retirées** indique leur fréquence et leur niveau.
 
-L'écoute et le test d'annulation **ne sont pas enregistrés avec le projet** : un projet se rouvre toujours en écoute normale, pour éviter d'enregistrer la correction seule par accident.
+L'écoute et le test d'annulation **ne sont pas enregistrés avec le projet, et ne peuvent pas être automatisés** : un projet se rouvre toujours en écoute normale, pour éviter d'enregistrer la correction seule par accident. Tous les autres réglages (curseurs et choix listés plus bas) sont au contraire des paramètres ordinaires, automatisables et sauvegardés avec le projet — voir la [référence des réglages](#11-référence-des-réglages).
 
 ---
 
@@ -261,24 +261,32 @@ Compare les deux à l'oreille sur ton morceau.
 
 ## 11. Référence des réglages
 
-| Réglage | Plage | Défaut |
-|---|---|---|
-| Intensité | 0 – 100 % | 100 % |
-| Mode de sortie | Parasite inversé / Signal nettoyé | Parasite inversé |
-| Résonances | Actif / Inactif | Actif |
-| Sensibilité | 6 – 40 dB | 15 dB |
-| Persistance | 50 – 2000 ms | 300 ms |
-| Variation tolérée | 0,5 – 20 dB/s | 4 dB/s |
-| Fréquence basse | 20 Hz – 2 kHz | 40 Hz |
-| Fréquence haute | 1 – 20 kHz | 18 kHz |
-| Restauration de stem | Désactivée / A / B | Désactivée |
-| Début de restauration | 500 Hz – 10 kHz | 2,5 kHz |
-| Récupération (A) | 0 – 100 % | 100 % |
-| Pente cible (B) | −12 – 0 dB/octave | −4,5 dB/octave |
-| Remontée maximale (B) | 0 – 24 dB | 12 dB |
-| Aigus recréés (B) | 0 – 100 % | 0 % |
+| Réglage | Plage | Défaut | Automatisable |
+|---|---|---|---|
+| Intensité | 0 – 100 % | 100 % | Oui |
+| Mode de sortie | Parasite inversé / Signal nettoyé | Parasite inversé | Oui |
+| Résonances | Actif / Inactif | Actif | Oui |
+| Sensibilité | 6 – 40 dB | 15 dB | Oui |
+| Persistance | 50 – 2000 ms | 300 ms | Oui |
+| Variation tolérée | 0,5 – 20 dB/s | 4 dB/s | Oui |
+| Fréquence basse | 20 Hz – 2 kHz | 40 Hz | Oui |
+| Fréquence haute | 1 – 20 kHz | 18 kHz | Oui |
+| Restauration de stem | Désactivée / A / B | Désactivée | Oui |
+| Début de restauration | 500 Hz – 10 kHz | 2,5 kHz | Oui |
+| Récupération (A) | 0 – 100 % | 100 % | Oui |
+| Pente cible (B) | −12 – 0 dB/octave | −4,5 dB/octave | Oui |
+| Remontée maximale (B) | 0 – 24 dB | 12 dB | Oui |
+| Aigus recréés (B) | 0 – 100 % | 0 % | Oui |
+| Écouter ce qui est retiré | — | Écoute normale | **Non** |
+| Test d'annulation | — | Désactivé | **Non** |
 
-Tous ces réglages sont automatisables et enregistrés avec le projet, sauf l'écoute du retiré et le test d'annulation.
+Tous ces réglages sont de vrais paramètres VST3 : automatisables dans Live, et sauvegardés avec le projet et les presets. Les deux seules exceptions sont l'écoute du retiré et le test d'annulation, volontairement exclus pour qu'un projet se rouvre toujours en écoute normale (voir [section 4](#4-linterface)).
+
+### Automatiser un réglage dans Live
+
+1. Active le mode automation de l'Arrangement (le bouton en haut à droite, ou `Ctrl+A`).
+2. Dans le sélecteur de dispositif/paramètre de la voie d'automation de la piste, choisis **SoundScalpel**, puis le réglage voulu (par exemple **Récupération** ou **Intensité**) dans la liste.
+3. Dessine la courbe. Les changements s'appliquent par pas d'environ 10 ms (le rythme interne de l'analyse) : pas de clic à craindre.
 
 ---
 
