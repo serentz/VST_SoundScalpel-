@@ -21,6 +21,7 @@ Ce guide couvre la version actuelle du plugin.
 11. [Dépannage](#11-dépannage)
 12. [Référence des réglages](#12-référence-des-réglages)
 13. [Limites actuelles](#13-limites-actuelles)
+14. [Licence](#14-licence)
 
 ---
 
@@ -337,3 +338,9 @@ Tous ces réglages sont de vrais paramètres VST3 : automatisables dans Live, et
 - **Sons très tenus et stables** (drones, pads sans évolution, sons de cloche) : le moteur de résonances peut les prendre pour des défauts. Écoute ce qui est retiré et ajuste Persistance, Variation tolérée ou la plage de fréquences.
 - **Restauration de stem** : aucun des deux modes ne rend exactement le stem idéal. Le mode A ramène un peu des autres sources du mix ; le mode B n'invente des aigus que s'ils sont demandés.
 - Plateforme : Windows x64, VST3, testé avec Ableton Live 12.
+
+---
+
+## 14. Licence
+
+SoundScalpel est publié sous **GPL-3.0-or-later** (texte complet dans [LICENSE](../LICENSE)). Ce choix n'est pas arbitraire : `vst3-sys`, la bibliothèque qui relie nih-plug au SDK VST3 de Steinberg, est elle-même sous GPLv3 — un binaire compilé qui l'embarque est une œuvre dérivée, et sa distribution doit respecter la GPLv3. Le détail des licences de chaque dépendance est dans [docs/THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
