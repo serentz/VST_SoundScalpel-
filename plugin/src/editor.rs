@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 pub const WIDTH: u32 = 1000;
-pub const HEIGHT: u32 = 680;
+pub const HEIGHT: u32 = 720;
 
 const BG: Color32 = Color32::from_rgb(0x14, 0x12, 0x1B);
 const PANEL: Color32 = Color32::from_rgb(0x1E, 0x1B, 0x28);
@@ -36,6 +36,21 @@ pub fn default_state() -> Arc<EguiState> {
     EguiState::from_size(WIDTH, HEIGHT)
 }
 
+/// Section ouverte dans le panneau de droite. Une seule à la fois : chacune a
+/// ainsi toute la hauteur disponible, sans avoir à faire défiler l'autre pour
+/// l'atteindre.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Resonance,
+    Stem,
+}
+
+impl Default for Section {
+    fn default() -> Self {
+        Section::Resonance
+    }
+}
+
 /// Copie lissée de l'affichage, propre à l'interface.
 #[derive(Default)]
 struct View {
@@ -48,6 +63,7 @@ struct View {
     resonances: Vec<ResonanceInfo>,
     /// Images affichées sans nouvelle donnée audio.
     stale: u32,
+    section: Section,
 }
 
 impl View {
@@ -116,7 +132,7 @@ pub fn create(params: Arc<ScalpelParams>, shared: Arc<Shared>) -> Option<Box<dyn
             egui::SidePanel::right("controls")
                 .exact_width(290.0)
                 .resizable(false)
-                .show(ctx, |ui| controls(ui, &params, setter, &shared));
+                .show(ctx, |ui| controls(ui, &params, setter, &shared, &mut view.section));
 
             egui::TopBottomPanel::bottom("resonances")
                 .exact_height(54.0)
@@ -171,7 +187,7 @@ fn slider(ui: &mut egui::Ui, label: &str, param: &FloatParam, setter: &ParamSett
     ui.add_space(2.0);
 }
 
-fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, shared: &Shared) {
+fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, shared: &Shared, section: &mut Section) {
     ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
     ui.add_space(6.0);
     ui.label(RichText::new("SoundScalpel").size(22.0).strong().color(ACCENT));
@@ -211,28 +227,40 @@ fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, sha
     let ms = if sr > 0.0 { latency as f32 * 1000.0 / sr } else { 0.0 };
     ui.label(RichText::new(format!("Latence déclarée : {latency} éch. ({} ms)", fr(ms, 1))).color(LABEL));
 
+    ui.add_space(6.0);
+    ui.separator();
+
+    // Deux onglets plutôt qu'une pile : chaque section a toute la hauteur
+    // restante, au lieu d'avoir à faire défiler l'une pour atteindre l'autre.
+    ui.horizontal(|ui| {
+        if ui.selectable_label(*section == Section::Resonance, "Résonances").clicked() {
+            *section = Section::Resonance;
+        }
+        if ui.selectable_label(*section == Section::Stem, "Restauration de stem").clicked() {
+            *section = Section::Stem;
+        }
+    });
     ui.add_space(4.0);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Résonances et sifflements").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let on = params.res_enabled.value();
-                if ui.selectable_label(on, if on { "Actif" } else { "Inactif" }).clicked() {
-                    set_param(setter, &params.res_enabled, !on);
-                }
+
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match section {
+        Section::Resonance => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Résonances et sifflements").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let on = params.res_enabled.value();
+                    if ui.selectable_label(on, if on { "Actif" } else { "Inactif" }).clicked() {
+                        set_param(setter, &params.res_enabled, !on);
+                    }
+                });
             });
-        });
-        egui::CollapsingHeader::new("Réglages des résonances").default_open(true).show(ui, |ui| {
+            ui.add_space(4.0);
             slider(ui, "Sensibilité (écart au voisinage)", &params.res_sensitivity, setter);
             slider(ui, "Persistance avant retrait", &params.res_persistence, setter);
             slider(ui, "Variation de niveau tolérée", &params.res_max_slope, setter);
             slider(ui, "Fréquence basse", &params.res_min_hz, setter);
             slider(ui, "Fréquence haute", &params.res_max_hz, setter);
-        });
-        ui.add_space(6.0);
-        ui.separator();
-        stem_section(ui, params, setter, shared);
+        }
+        Section::Stem => stem_section(ui, params, setter, shared),
     });
 }
 
