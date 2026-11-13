@@ -47,6 +47,7 @@ pub fn default_state() -> Arc<EguiState> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Resonance,
+    Noise,
     Stem,
 }
 
@@ -203,7 +204,9 @@ fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, sha
     ui.add_space(4.0);
 
     let listening = shared.is_listening();
-    if big_toggle(ui, listening, "ÉCOUTER CE QUI EST RETIRÉ", "ÉCOUTE DU RETIRÉ : ACTIVE", LISTEN, 42.0) {
+    // Selon le moteur, la correction retire (résonances, bruit) ou ajoute
+    // (restauration de stem) ; le libellé reste donc neutre sur ce point.
+    if big_toggle(ui, listening, "ÉCOUTER LA CORRECTION", "ÉCOUTE DE LA CORRECTION : ACTIVE", LISTEN, 42.0) {
         shared.listen.store(!listening, Ordering::Relaxed);
     }
     ui.add_space(8.0);
@@ -241,6 +244,9 @@ fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, sha
         if ui.selectable_label(*section == Section::Resonance, "Résonances").clicked() {
             *section = Section::Resonance;
         }
+        if ui.selectable_label(*section == Section::Noise, "Bruit").clicked() {
+            *section = Section::Noise;
+        }
         if ui.selectable_label(*section == Section::Stem, "Restauration de stem").clicked() {
             *section = Section::Stem;
         }
@@ -265,8 +271,67 @@ fn controls(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, sha
             slider(ui, "Fréquence basse", &params.res_min_hz, setter);
             slider(ui, "Fréquence haute", &params.res_max_hz, setter);
         }
+        Section::Noise => noise_section(ui, params, setter, shared),
         Section::Stem => stem_section(ui, params, setter, shared),
     });
+}
+
+fn noise_section(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, shared: &Shared) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Bruit large bande").strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let on = params.noise_enabled.value();
+            if ui.selectable_label(on, if on { "Actif" } else { "Inactif" }).clicked() {
+                set_param(setter, &params.noise_enabled, !on);
+            }
+        });
+    });
+    ui.label(
+        RichText::new("Atténuation, pas annulation : un bruit aléatoire ne peut pas être recréé puis soustrait.")
+            .color(LABEL),
+    );
+    ui.add_space(4.0);
+
+    let status = shared.display.lock().map(|d| d.noise).unwrap_or_default();
+    let learning = params.noise_learn.value();
+    if big_toggle(
+        ui,
+        learning,
+        "APPRENDRE LE BRUIT",
+        "CAPTURE EN COURS : lis un passage de bruit seul",
+        TEST,
+        34.0,
+    ) {
+        set_param(setter, &params.noise_learn, !learning);
+    }
+    ui.horizontal(|ui| {
+        let (text, color) = if learning {
+            ("Capture en cours…".to_string(), TEST)
+        } else if status.has_profile && !status.using_auto {
+            (format!("Profil appris et gelé ({:.0} dB).", status.level_db), OK)
+        } else if status.has_profile && status.using_auto {
+            (format!("Pas de profil appris : estimation automatique ({:.0} dB).", status.level_db), LABEL)
+        } else {
+            ("Aucun profil : active « Apprendre le bruit » ou « Estimation automatique ».".to_string(), WARN)
+        };
+        ui.label(RichText::new(text).color(color));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Remettre à zéro").clicked() {
+                shared.noise_reset.store(true, Ordering::Relaxed);
+            }
+        });
+    });
+    ui.add_space(4.0);
+
+    let auto = params.noise_auto_adapt.value();
+    if ui.selectable_label(auto, "Estimation automatique").on_hover_text(
+        "À défaut de profil appris, suit un plancher de bruit conservateur ; désactive pour ne jamais confondre les notes tenues avec du bruit."
+    ).clicked() {
+        set_param(setter, &params.noise_auto_adapt, !auto);
+    }
+    ui.add_space(4.0);
+    slider(ui, "Réduction maximale", &params.noise_reduction, setter);
+    slider(ui, "Lissage", &params.noise_smoothing, setter);
 }
 
 fn stem_section(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter, shared: &Shared) {
@@ -474,7 +539,7 @@ fn analyzer(ui: &mut egui::Ui, view: &View, params: &ScalpelParams, shared: &Sha
     let banner = if shared.is_cancel_test() {
         Some(("TEST D'ANNULATION", TEST))
     } else if shared.is_listening() {
-        Some(("ÉCOUTE DE CE QUI EST RETIRÉ", LISTEN))
+        Some(("ÉCOUTE DE LA CORRECTION", LISTEN))
     } else {
         None
     };

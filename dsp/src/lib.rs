@@ -4,12 +4,14 @@
 //! parasite p et, dans un Audio Effect Rack à deux chaînes, sort −a × p ; la
 //! somme avec la chaîne « Original » donne x − a × p.
 
+pub mod noise;
 pub mod resonance;
 pub mod stem;
 pub mod stft;
 
 use realfft::num_complex::Complex32;
-use resonance::{ResonanceEngine, ResonanceInfo, ResonanceSettings};
+use noise::{NoiseEngine, NoiseSettings, NoiseStatus};
+use resonance::{ResonanceEngine, ResonanceInfo, ResonanceSettings, MAX_TRACKS};
 use stem::{StemEngine, StemSettings, StemStatus};
 use stft::{Estimator, RemoveAll, Stft};
 
@@ -71,13 +73,20 @@ impl Delay {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Settings {
     pub resonance: ResonanceSettings,
+    pub noise: NoiseSettings,
     pub stem: StemSettings,
 }
 
-/// Ensemble des moteurs. Le moteur de bruit viendra s'ajouter ici.
+/// Ensemble des moteurs.
 pub struct Engines {
     resonance: ResonanceEngine,
+    noise: NoiseEngine,
     stem: StemEngine,
+    /// Fréquences des résonances actives, recalculées à chaque trame : le
+    /// moteur de bruit les exclut de son masque pour ne pas les retirer une
+    /// seconde fois (pas d'allocation : tampon fixe, réutilisé).
+    resonance_info: [ResonanceInfo; MAX_TRACKS],
+    resonance_hz: [f32; MAX_TRACKS],
 }
 
 impl Estimator for Engines {
@@ -89,6 +98,26 @@ impl Estimator for Engines {
         frame: &mut [f32],
     ) {
         self.resonance.estimate(spectrum, frame);
+        let n = self.resonance.resonances(&mut self.resonance_info);
+        for i in 0..n {
+            self.resonance_hz[i] = self.resonance_info[i].hz;
+        }
+        self.noise.estimate(spectrum, &self.resonance_hz[..n], parasite);
+
+        // Plafond global, pour le seul moteur de bruit (le masque de
+        // résonances ne touche pas `parasite`, et les cases qu'il traite sont
+        // déjà exclues par le moteur de bruit ci-dessus) : il ne peut pas
+        // retirer plus que le signal observé à une case donnée. Ce plafond ne
+        // s'applique pas à la restauration de stem, qui ajoute volontairement
+        // de l'énergie là où le signal d'origine est faible ou nul — le
+        // limiter à |X| viderait sa correction exactement là où elle sert.
+        for (p, x) in parasite.iter_mut().zip(spectrum) {
+            let (pm, xm) = (p.norm(), x.norm());
+            if pm > xm && pm > 1e-20 {
+                *p *= xm / pm;
+            }
+        }
+
         self.stem.estimate(spectrum, reference, parasite);
     }
 }
@@ -105,8 +134,16 @@ impl ChannelProcessor {
         let stft = Stft::new(fft_size);
         let delay = Delay::new(stft.latency());
         let resonance = ResonanceEngine::new(fft_size, stft.hop(), sample_rate);
+        let noise = NoiseEngine::new(fft_size, stft.hop(), sample_rate);
         let stem = StemEngine::new(fft_size, sample_rate);
-        Self { stft, delay, engines: Engines { resonance, stem } }
+        let engines = Engines {
+            resonance,
+            noise,
+            stem,
+            resonance_info: [ResonanceInfo::default(); MAX_TRACKS],
+            resonance_hz: [0.0; MAX_TRACKS],
+        };
+        Self { stft, delay, engines }
     }
 
     pub fn latency(&self) -> usize {
@@ -115,6 +152,7 @@ impl ChannelProcessor {
 
     pub fn set_settings(&mut self, s: &Settings) {
         self.engines.resonance.set_settings(s.resonance);
+        self.engines.noise.set_settings(s.noise);
         self.engines.stem.set_settings(s.stem);
     }
 
@@ -142,6 +180,16 @@ impl ChannelProcessor {
         self.engines.stem.status()
     }
 
+    /// État du profil de bruit.
+    pub fn noise_status(&self) -> NoiseStatus {
+        self.engines.noise.status()
+    }
+
+    /// Efface le profil de bruit appris et l'estimation automatique.
+    pub fn reset_noise_profile(&mut self) {
+        self.engines.noise.reset_profile();
+    }
+
     /// Nombre de résonances en cours de soustraction.
     pub fn active_resonances(&self) -> usize {
         self.engines.resonance.active_count()
@@ -151,6 +199,7 @@ impl ChannelProcessor {
         self.stft.reset();
         self.delay.reset();
         self.engines.resonance.reset();
+        self.engines.noise.reset();
         self.engines.stem.reset();
     }
 

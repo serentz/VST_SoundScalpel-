@@ -3,8 +3,9 @@
 //! Usage prévu : Audio Effect Rack à deux chaînes, « Original » vide et
 //! « SoundScalpel » en mode « Parasite inversé ». La somme du rack donne le son
 //! nettoyé. Moteurs : résonances et sifflements (synthèse et soustraction),
-//! restauration de stem (mode A avec le mix d'origine sur la sidechain, mode B
-//! sans référence). Le moteur de bruit viendra ensuite.
+//! bruit large bande (atténuation spectrale, profil appris ou estimation
+//! automatique), restauration de stem (mode A avec le mix d'origine sur la
+//! sidechain, mode B sans référence).
 
 mod editor;
 mod shared;
@@ -12,6 +13,7 @@ mod shared;
 use nih_plug::prelude::*;
 use nih_plug_egui::EguiState;
 use shared::{Shared, MAX_SHOWN};
+use soundscalpel_dsp::noise::NoiseSettings;
 use soundscalpel_dsp::resonance::{ResonanceInfo, ResonanceSettings};
 use soundscalpel_dsp::stem::{StemMode, StemSettings};
 use soundscalpel_dsp::{fft_size_for, ChannelProcessor, Output, Settings};
@@ -61,6 +63,17 @@ pub struct ScalpelParams {
     pub res_min_hz: FloatParam,
     #[id = "res_hi"]
     pub res_max_hz: FloatParam,
+
+    #[id = "noise_on"]
+    pub noise_enabled: BoolParam,
+    #[id = "noise_learn"]
+    pub noise_learn: BoolParam,
+    #[id = "noise_auto"]
+    pub noise_auto_adapt: BoolParam,
+    #[id = "noise_reduction"]
+    pub noise_reduction: FloatParam,
+    #[id = "noise_smoothing"]
+    pub noise_smoothing: FloatParam,
 
     #[id = "stem_mode"]
     pub stem_mode: EnumParam<StemChoice>,
@@ -125,6 +138,24 @@ impl Default for ScalpelParams {
             .with_value_to_string(formatters::v2s_f32_rounded(1)),
             res_min_hz: hz_param("Fréquence basse", 40.0, 20.0, 2000.0),
             res_max_hz: hz_param("Fréquence haute", 18_000.0, 1000.0, 20_000.0),
+
+            noise_enabled: BoolParam::new("Bruit", false),
+            noise_learn: BoolParam::new("Apprendre le bruit", false),
+            noise_auto_adapt: BoolParam::new("Estimation automatique", true),
+            noise_reduction: FloatParam::new(
+                "Réduction maximale",
+                12.0,
+                FloatRange::Linear { min: 0.0, max: 24.0 },
+            )
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_rounded(1)),
+            noise_smoothing: FloatParam::new(
+                "Lissage",
+                150.0,
+                FloatRange::Skewed { min: 20.0, max: 500.0, factor: FloatRange::skew_factor(-1.0) },
+            )
+            .with_unit(" ms")
+            .with_value_to_string(formatters::v2s_f32_rounded(0)),
 
             stem_mode: EnumParam::new("Restauration de stem", StemChoice::Off),
             stem_start: hz_param("Début de restauration", 2500.0, 500.0, 10_000.0),
@@ -205,6 +236,7 @@ impl SoundScalpel {
             }
         }
         d.stem = first_status;
+        d.noise = first.noise_status();
         d.version = d.version.wrapping_add(1);
     }
 }
@@ -279,6 +311,11 @@ impl Plugin for SoundScalpel {
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let p = &self.params;
+        if self.shared.noise_reset.swap(false, Ordering::Relaxed) {
+            for ch in &mut self.channels {
+                ch.reset_noise_profile();
+            }
+        }
         let rack = p.output.value() == OutputMode::InvertedParasite;
         let out = match (p.bypass.value(), self.shared.is_cancel_test(), self.shared.is_listening(), rack) {
             (true, _, _, true) => Output::BypassSilent,
@@ -299,6 +336,13 @@ impl Plugin for SoundScalpel {
                 max_slope_db_s: p.res_max_slope.value(),
                 min_hz: p.res_min_hz.value(),
                 max_hz: p.res_max_hz.value(),
+            },
+            noise: NoiseSettings {
+                enabled: p.noise_enabled.value(),
+                learning: p.noise_learn.value(),
+                auto_adapt: p.noise_auto_adapt.value(),
+                max_reduction_db: p.noise_reduction.value(),
+                smoothing_ms: p.noise_smoothing.value(),
             },
             stem: StemSettings {
                 mode: match p.stem_mode.value() {

@@ -2,7 +2,7 @@
 
 SoundScalpel est un effet VST3 pour Windows, pensé pour Ableton Live 12, qui nettoie un son au scalpel : il retire les sifflements et résonances agressives, et peut redonner leurs aigus aux stems étouffés par une séparation.
 
-Ce guide couvre la version actuelle du plugin. Le moteur de réduction du souffle large bande, prévu au cahier des charges, n'est pas encore disponible.
+Ce guide couvre la version actuelle du plugin.
 
 ---
 
@@ -13,13 +13,14 @@ Ce guide couvre la version actuelle du plugin. Le moteur de réduction du souffl
 3. [Mise en place dans Live](#3-mise-en-place-dans-live)
 4. [L'interface](#4-linterface)
 5. [Résonances et sifflements](#5-résonances-et-sifflements)
-6. [Restauration de stem (aigus perdus)](#6-restauration-de-stem-aigus-perdus)
-7. [Écouter, comparer, régler](#7-écouter-comparer-régler)
-8. [Enregistrer le résultat](#8-enregistrer-le-résultat)
-9. [SoundScalpel et compresseur](#9-soundscalpel-et-compresseur)
-10. [Dépannage](#10-dépannage)
-11. [Référence des réglages](#11-référence-des-réglages)
-12. [Limites actuelles](#12-limites-actuelles)
+6. [Bruit large bande (souffle)](#6-bruit-large-bande-souffle)
+7. [Restauration de stem (aigus perdus)](#7-restauration-de-stem-aigus-perdus)
+8. [Écouter, comparer, régler](#8-écouter-comparer-régler)
+9. [Enregistrer le résultat](#9-enregistrer-le-résultat)
+10. [SoundScalpel et compresseur](#10-soundscalpel-et-compresseur)
+11. [Dépannage](#11-dépannage)
+12. [Référence des réglages](#12-référence-des-réglages)
+13. [Limites actuelles](#13-limites-actuelles)
 
 ---
 
@@ -114,15 +115,15 @@ Quand Live n'envoie pas de son, l'analyseur affiche « En attente de signal : la
 De haut en bas :
 
 - **Intensité** : dose de la correction appliquée (100 % = toute la correction).
-- **ÉCOUTER CE QUI EST RETIRÉ** : fait entendre uniquement la correction. Le bouton et un bandeau sur l'analyseur passent au rouge quand l'écoute est active.
+- **ÉCOUTER LA CORRECTION** : fait entendre uniquement la correction — ce qui est retiré (résonances, bruit) ou ce qui est ajouté (restauration de stem). Le bouton et un bandeau sur l'analyseur passent au rouge quand l'écoute est active.
 - **Sortie** : « Parasite inversé » (rack) ou « Signal nettoyé » (insertion directe).
 - **Test d'annulation** : voir la [section 3](#vérifier-lalignement--le-test-dannulation).
 - **Latence déclarée**.
-- Les réglages des deux moteurs, dans une zone qui défile.
+- Les réglages des trois moteurs, sous trois onglets.
 
 En bas de la fenêtre, la liste des **résonances retirées** indique leur fréquence et leur niveau.
 
-L'écoute et le test d'annulation **ne sont pas enregistrés avec le projet, et ne peuvent pas être automatisés** : un projet se rouvre toujours en écoute normale, pour éviter d'enregistrer la correction seule par accident. Tous les autres réglages (curseurs et choix listés plus bas) sont au contraire des paramètres ordinaires, automatisables et sauvegardés avec le projet — voir la [référence des réglages](#11-référence-des-réglages).
+L'écoute et le test d'annulation **ne sont pas enregistrés avec le projet, et ne peuvent pas être automatisés** : un projet se rouvre toujours en écoute normale, pour éviter d'enregistrer la correction seule par accident. Tous les autres réglages (curseurs et choix listés plus bas) sont au contraire des paramètres ordinaires, automatisables et sauvegardés avec le projet — voir la [référence des réglages](#12-référence-des-réglages).
 
 ---
 
@@ -160,7 +161,38 @@ Sur de la musique électronique, les sons vraiment agressifs se trouvent surtout
 
 ---
 
-## 6. Restauration de stem (aigus perdus)
+## 6. Bruit large bande (souffle)
+
+### Le principe, et sa limite assumée
+
+Un bruit blanc ou un souffle est aléatoire : contrairement à un sifflement, sa forme d'onde ne se déduit ni de son passé ni du reste du signal, donc il n'y a rien à synthétiser puis annuler. Ce moteur **atténue** le bruit au lieu de l'annuler : il estime un plancher de bruit par case de fréquence et réduit ce qui lui ressemble. Un résidu reste toujours sous les notes — c'est inhérent à la méthode, pas un réglage à corriger.
+
+### Donner un profil au moteur
+
+Deux façons d'obtenir le plancher de bruit, par ordre de préférence :
+
+1. **Apprendre le bruit** : lis un passage qui ne contient que le bruit (avant l'entrée d'un instrument, par exemple), clique sur **APPRENDRE LE BRUIT**, laisse jouer 1 à 2 secondes, puis clique à nouveau pour arrêter — le profil se **gèle** automatiquement à l'arrêt. **Remettre à zéro** efface ce profil.
+2. **Estimation automatique** : à défaut de passage de bruit seul, le moteur suit un plancher conservateur en continu. Désactive-la si elle confond les notes tenues d'un instrument avec du bruit.
+
+La ligne d'état indique quel profil est actif : profil appris et gelé, estimation automatique, ou aucun profil.
+
+### Réglages
+
+| Réglage | Effet | Conseil |
+|---|---|---|
+| Bruit (Actif / Inactif) | Active le moteur | Désactivé par défaut |
+| Apprendre le bruit | Capture le profil pendant qu'il est actif | Sur un passage de bruit seul uniquement |
+| Estimation automatique | Plancher conservateur sans profil appris | Désactive-la sur un instrument très tenu |
+| Réduction maximale | Plafond d'atténuation | 12 dB par défaut ; prudent sur un signal dense |
+| Lissage | Stabilité du gain dans le temps | Plus haut = moins de bruit musical, moins réactif |
+
+### Conseils de réglage
+
+Sur un signal dense (plusieurs voix ou harmoniques qui se chevauchent en permanence), toute atténuation du bruit mord un peu sur le signal lui-même : c'est le cas que le cahier des charges déclare non séparable sans altération. Monte « Réduction maximale » progressivement à l'oreille, en écoutant la correction (section 8), plutôt que de viser un chiffre. Sur une source bien séparée du bruit (une voix isolée, un instrument seul), le gain est net et sans compromis.
+
+---
+
+## 7. Restauration de stem (aigus perdus)
 
 ### Le problème
 
@@ -206,16 +238,17 @@ Le mode B est un choix à part entière quand le mix d'origine n'est pas disponi
 
 ---
 
-## 7. Écouter, comparer, régler
+## 8. Écouter, comparer, régler
 
 - **Avant / après** : coupe puis réactive la chaîne SoundScalpel du rack (ou utilise le bouton d'activation de Live en mode « Signal nettoyé » uniquement).
-- **Ce qui est retiré** : clique sur **ÉCOUTER CE QUI EST RETIRÉ**. Dans le rack, le plugin compense lui-même la chaîne originale : tu entends uniquement la correction, sans avoir à mettre la chaîne en solo.
+- **La correction seule** : clique sur **ÉCOUTER LA CORRECTION**. Dans le rack, le plugin compense lui-même la chaîne originale : tu entends uniquement la correction, sans avoir à mettre la chaîne en solo.
   - Pour les résonances, tu ne dois entendre que des sifflements ou des sons agressifs. Si tu reconnais des notes de ta musique, le réglage est trop agressif.
   - Pour la restauration de stem, tu entends les aigus ajoutés.
+  - Pour le bruit, tu entends uniquement ce qui est retiré : si tu y reconnais le signal lui-même, baisse « Réduction maximale ».
 
 ---
 
-## 8. Enregistrer le résultat
+## 9. Enregistrer le résultat
 
 ### Réenregistrement sur une piste
 
@@ -232,7 +265,7 @@ Le mode B est un choix à part entière quand le mix d'origine n'est pas disponi
 
 ---
 
-## 9. SoundScalpel et compresseur
+## 10. SoundScalpel et compresseur
 
 Un compresseur remonte les sons faibles, donc tout ce qui reste d'un défaut. L'annulation de SoundScalpel laisse peu de résidu, mais la position compte quand même :
 
@@ -243,7 +276,7 @@ Compare les deux à l'oreille sur ton morceau.
 
 ---
 
-## 10. Dépannage
+## 11. Dépannage
 
 | Symptôme | Cause probable | Solution |
 |---|---|---|
@@ -255,11 +288,12 @@ Compare les deux à l'oreille sur ton morceau.
 | Mode A : « Aucun signal sur la sidechain » | Sidechain non réglée, ou piste du mix muette | Règle la source Sidechain ; fais jouer la piste du mix |
 | Mode A : stem décalé de N échantillons | Pistes stem et mix mal calées | Recale l'une des deux pistes |
 | La copie du plugin échoue (« fichier occupé ») | Live utilise le plugin | Ferme Live avant de copier |
+| Le bruit réduit assombrit aussi le signal | Signal dense, réduction trop forte | Baisse « Réduction maximale » ; vérifie le profil (appris vs automatique) |
 | Comportement étrange après une mise à jour | Instance créée avec une ancienne version | Remplace-la par une nouvelle instance |
 
 ---
 
-## 11. Référence des réglages
+## 12. Référence des réglages
 
 | Réglage | Plage | Défaut | Automatisable |
 |---|---|---|---|
@@ -277,6 +311,12 @@ Compare les deux à l'oreille sur ton morceau.
 | Pente cible (B) | −12 – 0 dB/octave | −4,5 dB/octave | Oui |
 | Remontée maximale (B) | 0 – 24 dB | 12 dB | Oui |
 | Aigus recréés (B) | 0 – 100 % | 0 % | Oui |
+| Bruit | Actif / Inactif | Inactif | Oui |
+| Apprendre le bruit | Actif / Inactif | Inactif | Oui |
+| Estimation automatique (bruit) | Actif / Inactif | Actif | Oui |
+| Réduction maximale (bruit) | 0 – 24 dB | 12 dB | Oui |
+| Lissage (bruit) | 20 – 500 ms | 150 ms | Oui |
+| Remettre à zéro le profil de bruit | — | — | **Non** |
 | Écouter ce qui est retiré | — | Écoute normale | **Non** |
 | Test d'annulation | — | Désactivé | **Non** |
 
@@ -290,9 +330,9 @@ Tous ces réglages sont de vrais paramètres VST3 : automatisables dans Live, et
 
 ---
 
-## 12. Limites actuelles
+## 13. Limites actuelles
 
-- **Pas encore de réduction du souffle** large bande : ce moteur est prévu, pas livré.
+- **Bruit large bande** : le moteur atténue, il n'annule pas — un bruit aléatoire ne peut pas être recréé puis soustrait comme un sifflement. Sur un signal musical dense, la réduction mord nécessairement un peu sur le signal ; le réglage par défaut reste volontairement prudent.
 - **Stéréo** : chaque canal est analysé séparément ; la détection liée entre gauche et droite est prévue.
 - **Sons très tenus et stables** (drones, pads sans évolution, sons de cloche) : le moteur de résonances peut les prendre pour des défauts. Écoute ce qui est retiré et ajuste Persistance, Variation tolérée ou la plage de fréquences.
 - **Restauration de stem** : aucun des deux modes ne rend exactement le stem idéal. Le mode A ramène un peu des autres sources du mix ; le mode B n'invente des aigus que s'ils sont demandés.

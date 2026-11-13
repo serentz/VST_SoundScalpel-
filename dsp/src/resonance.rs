@@ -16,7 +16,7 @@ use crate::stft::sqrt_hann;
 use realfft::num_complex::{Complex32, Complex64};
 use std::f64::consts::PI;
 
-const MAX_TRACKS: usize = 16;
+pub const MAX_TRACKS: usize = 16;
 const MAX_CANDIDATES: usize = 32;
 /// Cases utilisées de part et d'autre du pic pour l'ajustement.
 const FIT_HALF: isize = 4;

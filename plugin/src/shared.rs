@@ -3,6 +3,7 @@
 //! Le fil audio ne bloque jamais : il tente de prendre le verrou de l'affichage
 //! et renonce si l'interface le tient (une image perdue, pas de décrochage).
 
+use soundscalpel_dsp::noise::NoiseStatus;
 use soundscalpel_dsp::resonance::ResonanceInfo;
 use soundscalpel_dsp::stem::StemStatus;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -17,6 +18,10 @@ pub struct Shared {
     pub listen: AtomicBool,
     /// Test d'annulation, même règle que l'écoute.
     pub cancel_test: AtomicBool,
+    /// Demande de remise à zéro du profil de bruit. Action instantanée, sans
+    /// état à mémoriser : le fil audio l'exécute puis le remet lui-même à
+    /// false (bouton « à bascule qui se relâche tout seul »).
+    pub noise_reset: AtomicBool,
     /// Latence déclarée, en échantillons.
     pub latency: AtomicU32,
     pub display: Mutex<Display>,
@@ -33,6 +38,8 @@ pub struct Display {
     pub resonances: Vec<ResonanceInfo>,
     /// État de la sidechain (restauration de stem, mode A).
     pub stem: StemStatus,
+    /// État du profil de bruit.
+    pub noise: NoiseStatus,
     /// Incrémenté à chaque nouvelle image.
     pub version: u64,
 }
@@ -42,6 +49,7 @@ impl Default for Shared {
         Self {
             listen: AtomicBool::new(false),
             cancel_test: AtomicBool::new(false),
+            noise_reset: AtomicBool::new(false),
             latency: AtomicU32::new(0),
             display: Mutex::new(Display::default()),
         }
