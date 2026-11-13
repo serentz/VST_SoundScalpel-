@@ -25,6 +25,11 @@ const TEST: Color32 = Color32::from_rgb(0x2B, 0x8C, 0xD9);
 const OK: Color32 = Color32::from_rgb(0x4C, 0xC2, 0x7A);
 const WARN: Color32 = Color32::from_rgb(0xF2, 0xB1, 0x3A);
 
+/// En deçà de cette tolérance (échantillons), un décalage mesuré est annoncé
+/// comme « aligné » : à 48 kHz, 4 échantillons font 0,08 ms, inaudible et sous
+/// la précision de la mesure elle-même (par case de la STFT).
+const STEM_LAG_TOLERANCE: i32 = 4;
+
 const MIN_HZ: f32 = 20.0;
 const MAX_HZ: f32 = 20_000.0;
 const TOP_DB: f32 = 0.0;
@@ -299,7 +304,10 @@ fn stem_section(ui: &mut egui::Ui, params: &ScalpelParams, setter: &ParamSetter,
                 )
             } else if !status.lag_reliable {
                 ("Mix reçu, mesure de l'alignement en cours…".to_string(), LABEL)
-            } else if status.lag == 0 {
+            } else if status.lag.abs() <= STEM_LAG_TOLERANCE {
+                // En deçà de cette tolérance, l'écart mesuré ne distingue pas un vrai
+                // décalage de l'arrondi de la compensation de latence ou de la
+                // précision de la mesure : annoncer « aligné » évite une fausse alerte.
                 ("Mix reçu, aligné sur le stem.".to_string(), OK)
             } else {
                 let side = if status.lag > 0 { "en retard" } else { "en avance" };
